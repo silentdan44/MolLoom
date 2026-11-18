@@ -2,6 +2,8 @@
 
 A Python library for building 3D polymer structures with automatic retry/rollback logic, force field optimization, and export to multiple simulation formats (OpenMM, LAMMPS, GROMACS).
 
+[GitHub repository](https://github.com/silentdan44/MolLoom)
+
 <p align="center">
   <img src="assets/poly.png" alt="MolLoom" width="400"/>
 </p>
@@ -32,10 +34,10 @@ docker run --rm molloom python -m pytest -q
 
 ### Install the Python package from GitHub
 
-First create and activate the conda-forge environment described below, then replace `<github-user>` and `<repository>` with the GitHub owner and repository name:
+First create and activate the conda-forge environment described below, then install MolLoom from its repository:
 
 ```bash
-python -m pip install --no-deps "git+https://github.com/<github-user>/<repository>.git"
+python -m pip install --no-deps "git+https://github.com/silentdan44/MolLoom.git"
 ```
 
 OpenFF and NAGL dependencies are most reliably installed with the conda-forge environment below. Chain generation requires that environment, including OpenMM and NAGL models.
