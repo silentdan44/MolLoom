@@ -229,7 +229,7 @@ def connect_mols(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=False,
     return mol
 
 
-def check_3d_proximity(coord1, coord2=None, dist_min=1.8, ignore_rad=3, dmat=None):
+def check_3d_proximity(coord1, coord2=None, dist_min=0.7, ignore_rad=3, dmat=None):
     if coord2 is not None:
         dist_matrix = calc.distance_matrix(coord1, coord2)
     else:
@@ -261,7 +261,7 @@ def check_3d_bond_length(mol, confId=0, bond_s=2.7, bond_a=1.9, bond_d=1.8, bond
     return bool(np.all(lengths <= limits))
 
 
-def check_3d_structure_poly(poly, mon, poly_dmat=None, dist_min=1.8, ignore_rad=3,
+def check_3d_structure_poly(poly, mon, poly_dmat=None, dist_min=0.7, ignore_rad=3,
                             check_bond_length=False, previous_atom_count=None,
                             added_atom_indices=None, removed_head_idx=None):
     """

@@ -269,7 +269,7 @@ Every field is optional. These are the defaults:
 | `bond_length` | `1.5` | Target length of each new inter-unit bond. |
 | `dihedral` | `π` radians | Target torsion when `random_rot=False`. |
 | `random_rot` | `True` | Pick random torsions during growth. |
-| `dist_min` | `1.8` | Minimum distance for nonbonded heavy-atom pairs; pairs within three covalent bonds are excluded. |
+| `dist_min` | `0.7` | Minimum distance for nonbonded heavy-atom pairs; pairs within three covalent bonds are excluded. |
 | `retry` | `100` | Additional full-chain retry/rollback cycles after the first attempt. |
 | `rollback` | `5` | Successful growth steps to undo after a failed step. |
 | `retry_step` | `200` | Candidate connections allowed at each step. |
@@ -284,7 +284,7 @@ from polymer_lib import BuildConfig, build_polymer
 
 config = BuildConfig(
     bond_length=1.5, dihedral=3.141592653589793,
-    random_rot=True, dist_min=1.8,
+    random_rot=True, dist_min=0.7,
     retry=100, rollback=5, retry_step=200,
     check_bond_length=True,
 )
@@ -319,7 +319,7 @@ Use `Polymerizer` when repeat units differ, monomers are already constructed, or
 ```python
 Polymerizer(
     monomers, bond_length=1.5, dihedral=3.141592653589793,
-    random_rot=True, dist_min=1.8, retry=100, rollback=5,
+    random_rot=True, dist_min=0.7, retry=100, rollback=5,
     retry_step=200, check_bond_length=True,
     optimizer=None, optimizer_options=None, config=None, seed=None,
     tacticity='atactic', tacticity_center=None, push_off_options=None,

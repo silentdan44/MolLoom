@@ -24,7 +24,7 @@ class BuildConfig:
     bond_length: float = 1.5
     dihedral: float = np.pi
     random_rot: bool = True
-    dist_min: float = 1.8
+    dist_min: float = 0.7
     retry: int = 100
     rollback: int = 5
     retry_step: int = 200
@@ -86,7 +86,7 @@ class Polymerizer:
     """
 
     def __init__(self, monomers, bond_length=1.5, dihedral=np.pi, random_rot=True,
-                 dist_min=1.8, retry=100, rollback=5, retry_step=200,
+                 dist_min=0.7, retry=100, rollback=5, retry_step=200,
                  check_bond_length=True, optimizer=None, optimizer_options=None,
                  config=None, seed=None, tacticity='atactic', tacticity_center=None,
                  push_off_options=None, conformer_count=4, restart_attempts=3):
