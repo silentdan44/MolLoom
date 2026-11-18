@@ -5,6 +5,7 @@ from rdkit.Geometry import Point3D
 
 from polymer_lib import BuildConfig, Monomer, Polymerizer, build_polymer
 from polymer_lib.poly import check_3d_bond_length, check_3d_structure_poly, connect_mols
+from polymer_lib.calc import dihedral_coord
 
 
 @pytest.fixture(autouse=True)
@@ -14,6 +15,31 @@ def isolate_chain_growth_from_push_off(monkeypatch):
 
 
 POLYSTYRENE = '*CC(c1ccccc1)*'
+
+
+def _joined_dihedral(polymer, first, second):
+    """Measure the linker-defined dihedral after removing the joined linkers."""
+    first_n = first.GetNumAtoms()
+    first_tail = first.GetIntProp('tail_idx')
+    first_head = first.GetIntProp('head_idx')
+    first_tail_neighbor = first.GetIntProp('tail_ne_idx')
+    second_head = second.GetIntProp('head_idx')
+    second_tail = second.GetIntProp('tail_idx')
+    second_head_neighbor = second.GetIntProp('head_ne_idx')
+
+    atom_indices = (
+        first_head - (first_head > first_tail),
+        first_tail_neighbor - (first_tail_neighbor > first_tail),
+        first_n - 1 + second_head_neighbor - (second_head_neighbor > second_head),
+        first_n - 1 + second_tail - (second_tail > second_head),
+    )
+    coords = polymer.GetConformer().GetPositions()
+    return dihedral_coord(*(coords[index] for index in atom_indices), rad=True)
+
+
+def _assert_angle_matches(actual, target):
+    error = np.arctan2(np.sin(actual - target), np.cos(actual - target))
+    assert error == pytest.approx(0.0, abs=1e-7)
 
 
 def build(smiles, count, *, seed=19, optimizer=None):
@@ -293,6 +319,39 @@ def test_new_interunit_bond_matches_requested_length():
     atom_b = first.GetNumAtoms() - 1 + head_neighbor - (head_neighbor > head)
     coords = np.asarray(result.GetConformer().GetPositions())
     assert np.linalg.norm(coords[atom_a] - coords[atom_b]) == pytest.approx(1.5, abs=1e-8)
+
+
+@pytest.mark.parametrize('target_dihedral', [-1.25, 0.7])
+def test_connect_mols_respects_requested_dihedral(target_dihedral):
+    first = Monomer(POLYSTYRENE, seed=19).mol
+    second = Monomer(POLYSTYRENE, seed=23).mol
+
+    result = connect_mols(
+        first, second, dihedral=target_dihedral, random_rot=False
+    )
+
+    _assert_angle_matches(_joined_dihedral(result, first, second), target_dihedral)
+
+
+@pytest.mark.parametrize('target_dihedral', [-1.25, 0.7])
+def test_rust_growth_respects_requested_dihedral(target_dihedral):
+    if not _rust_core_available():
+        pytest.skip('optional Rust core is not built')
+    first = Monomer(POLYSTYRENE, seed=19)
+    second = Monomer(POLYSTYRENE, seed=23)
+    result = Polymerizer(
+        [first.copy(), second.copy()],
+        growth_backend='rust',
+        optimizer=None,
+        seed=19,
+        dihedral=target_dihedral,
+        random_rot=False,
+    ).build()
+
+    assert result.success, result.failure_reason
+    _assert_angle_matches(
+        _joined_dihedral(result.molecule, first.mol, second.mol), target_dihedral
+    )
 
 
 def test_bond_length_check_uses_bond_vectors_and_detects_stretching():

@@ -158,7 +158,7 @@ fn transform_unit(
         )?
     };
     let placed_center = placed[head_neighbor];
-    let result = rotate_all(&placed, mul(old_vec, -1.0), target_dihedral - twist, placed_center);
+    let result = rotate_all(&placed, mul(old_vec, -1.0), twist - target_dihedral, placed_center);
     if result.iter().flatten().any(|v| !v.is_finite()) {
         return None;
     }

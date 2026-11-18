@@ -228,7 +228,7 @@ def connect_mols(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=False,
             rad=True
         )
     mol2_coord_rot = calc.rotate_rod(
-        mol2_coord_rot, -mol1_tail_vec, (dihedral - dih),
+        mol2_coord_rot, -mol1_tail_vec, (dih - dihedral),
         center=mol2_coord_rot[mol2.GetIntProp('head_ne_idx')]
     )
 
