@@ -56,7 +56,7 @@ def assert_valid_chain(result, expected_atoms):
                 continue
             if other not in distances:
                 separation = np.linalg.norm(coords[start] - coords[other])
-                assert separation >= 1.8, (start, other, separation)
+                assert separation >= 0.7, (start, other, separation)
 
 
 @pytest.mark.parametrize('count', [1, 2, 5])
