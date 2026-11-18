@@ -1,9 +1,9 @@
-# Polymer Generator
+# MolLoom
 
 A Python library for building 3D polymer structures with automatic retry/rollback logic, force field optimization, and export to multiple simulation formats (OpenMM, LAMMPS, GROMACS).
 
 <p align="center">
-  <img src="assets/poly.png" alt="Polymer Generator" width="400"/>
+  <img src="assets/poly.png" alt="MolLoom" width="400"/>
 </p>
 
 ## Features
@@ -20,14 +20,14 @@ A Python library for building 3D polymer structures with automatic retry/rollbac
 Docker is the recommended way to run the complete workflow, including OpenFF, OpenMM, push-off, and packing. From the repository root:
 
 ```bash
-docker build -t polymer-generator .
-echo '{"api_version":"1.0","request_id":"demo-1","action":"build","input":{"smiles":"*CC(c1ccccc1)*","units":3,"seed":7}}' | docker run --rm -i polymer-generator
+docker build -t molloom .
+echo '{"api_version":"1.0","request_id":"demo-1","action":"build","input":{"smiles":"*CC(c1ccccc1)*","units":3,"seed":7}}' | docker run --rm -i molloom
 ```
 
 The container runs the JSON Lines API by default. See [JSON API and container runner](#json-api-and-container-runner) for request formats and actions. To run the test suite in the full environment:
 
 ```bash
-docker run --rm polymer-generator python -m pytest -q
+docker run --rm molloom python -m pytest -q
 ```
 
 ### Install the Python package from GitHub
@@ -46,7 +46,7 @@ Install [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamb
 
 ```bash
 micromamba create -f environment.yml
-micromamba activate polymer_generator
+micromamba activate molloom
 python -m pip install --no-deps --editable .
 python -m pytest -q
 ```
@@ -335,7 +335,7 @@ Polymerizer(
 Rust growth can also assemble copolymer sequences supplied through `Polymerizer(monomers=[...])`. Build the optional core and select it explicitly:
 
 ```bash
-POLYMER_GENERATOR_BUILD_RUST=1 python -m pip install .
+MOLLOOM_BUILD_RUST=1 python -m pip install .
 ```
 
 ```python
@@ -572,7 +572,7 @@ simulation.saveState('md_start/state_after_run.xml')
 From the repository root, activate the development environment and run:
 
 ```bash
-micromamba activate polymer_generator
+micromamba activate molloom
 python -m pytest -q
 ```
 

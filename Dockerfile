@@ -11,8 +11,8 @@ RUN micromamba env create --yes --file /tmp/environment.yml \
 
 COPY --chown=$MAMBA_USER:$MAMBA_USER . /app
 
-RUN micromamba run -n polymer_generator python -m pip install --no-deps --editable /app
+RUN micromamba run -n molloom python -m pip install --no-deps --editable /app
 
-ENV ENV_NAME=polymer_generator
+ENV ENV_NAME=molloom
 
 CMD ["python", "-m", "polymer_lib.runner"]

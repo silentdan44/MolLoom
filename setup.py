@@ -14,11 +14,16 @@ from setuptools.dist import Distribution
 
 
 ROOT = Path(__file__).parent.resolve()
-RUST_BUILD_ENV = "POLYMER_GENERATOR_BUILD_RUST"
+RUST_BUILD_ENV = "MOLLOOM_BUILD_RUST"
+LEGACY_RUST_BUILD_ENV = "POLYMER_GENERATOR_BUILD_RUST"
 
 
 def rust_build_enabled() -> bool:
-    return os.environ.get(RUST_BUILD_ENV, "").strip().lower() in {"1", "true", "yes"}
+    enabled = {"1", "true", "yes"}
+    return any(
+        os.environ.get(name, "").strip().lower() in enabled
+        for name in (RUST_BUILD_ENV, LEGACY_RUST_BUILD_ENV)
+    )
 
 
 def library_filename() -> str:

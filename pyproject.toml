@@ -1,8 +1,8 @@
 # pyproject.toml
 [project]
-name = "polymer-generator"
+name = "molloom"
 version = "0.1.0"
-description = "Simple polymer chain generator using OpenFF and OpenMM"
+description = "MolLoom: build and pack 3D polymer structures using OpenFF and OpenMM"
 requires-python = ">=3.9"
 
 dependencies = [
