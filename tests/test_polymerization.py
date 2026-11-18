@@ -486,3 +486,79 @@ def test_automatic_restarts_are_bounded_and_report_failure(monkeypatch):
 def test_restart_attempts_validation(value):
     with pytest.raises(ValueError, match='restart_attempts'):
         BuildConfig(restart_attempts=value)
+
+
+def _rust_core_available():
+    from polymer_lib._rust_growth import _core
+
+    try:
+        _core()
+    except ImportError:
+        return False
+    return True
+
+
+def test_rust_growth_rejects_per_step_optimizer():
+    monomer = Monomer('*CC*', seed=7)
+    with pytest.raises(ValueError, match='does not support per-step optimizers'):
+        Polymerizer([monomer, monomer], growth_backend='rust', optimizer='mmff')
+
+
+@pytest.mark.skipif(not _rust_core_available(), reason='optional Rust core is not built')
+def test_rust_growth_builds_a_heterogeneous_copolymer():
+    small = Monomer('*CC*', seed=19)
+    styrene = Monomer(POLYSTYRENE, seed=19)
+    monomers = [small, styrene, small, styrene]
+    expected_atoms = sum(unit.mol.GetNumAtoms() for unit in monomers) - 2 * (len(monomers) - 1)
+
+    result = Polymerizer(
+        monomers,
+        growth_backend='rust',
+        optimizer=None,
+        seed=19,
+        retry=100,
+        retry_step=200,
+        rollback=5,
+    ).build()
+
+    assert_valid_chain(result, expected_atoms)
+
+
+@pytest.mark.skipif(not _rust_core_available(), reason='optional Rust core is not built')
+def test_rust_growth_preserves_requested_tacticity():
+    monomer = Monomer(POLYSTYRENE, seed=19)
+    polymerizer = Polymerizer(
+        [monomer.copy() for _ in range(4)],
+        growth_backend='rust',
+        optimizer=None,
+        seed=19,
+        tacticity='syndiotactic',
+    )
+
+    result = polymerizer.build()
+
+    assert result.success, result.failure_reason
+    assert [
+        result.molecule.GetAtomWithIdx(index).GetChiralTag()
+        for index in polymerizer._tacticity_atom_indices(result.molecule)
+    ] == [
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CW,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
+    ]
+
+
+@pytest.mark.skipif(not _rust_core_available(), reason='optional Rust core is not built')
+def test_json_api_can_select_rust_growth_backend():
+    from polymer_lib.api import _build
+
+    result = _build({
+        'smiles': '*CC*',
+        'units': 3,
+        'growth_backend': 'rust',
+        'seed': 19,
+    })
+
+    expected_atoms = 3 * Monomer('*CC*', seed=19).mol.GetNumAtoms() - 4
+    assert result['properties']['atoms'] == expected_atoms
+    assert result['diagnostics']['attempts'] > 0

@@ -150,3 +150,5 @@ Desktop.ini
 *.bak
 *.backup
 /AGENTS.md
+polymer_lib/rust_growth/target/
+polymer_lib/libpolymer_growth_core.*

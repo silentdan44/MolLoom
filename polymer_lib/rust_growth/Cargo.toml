@@ -1,0 +1,8 @@
+[package]
+name = "polymer_growth_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "polymer_growth_core"
+crate-type = ["cdylib"]

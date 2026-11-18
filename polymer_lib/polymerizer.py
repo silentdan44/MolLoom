@@ -33,6 +33,7 @@ class BuildConfig:
     restart_attempts: int = 3
     tacticity: object = 'atactic'
     tacticity_center: int = None
+    growth_backend: str = 'python'
 
     def __post_init__(self):
         if self.bond_length <= 0 or self.dist_min < 0:
@@ -43,6 +44,8 @@ class BuildConfig:
             raise ValueError('conformer_count must be a positive integer')
         if isinstance(self.restart_attempts, bool) or not isinstance(self.restart_attempts, int) or self.restart_attempts < 0:
             raise ValueError('restart_attempts must be a nonnegative integer')
+        if not isinstance(self.growth_backend, str) or self.growth_backend not in {'python', 'rust'}:
+            raise ValueError("growth_backend must be 'python' or 'rust'")
         _validate_tacticity(self.tacticity)
         if not isinstance(self.tacticity, str):
             object.__setattr__(self, 'tacticity', tuple(self.tacticity))
@@ -89,7 +92,8 @@ class Polymerizer:
                  dist_min=0.7, retry=100, rollback=5, retry_step=200,
                  check_bond_length=True, optimizer=None, optimizer_options=None,
                  config=None, seed=None, tacticity='atactic', tacticity_center=None,
-                 push_off_options=None, conformer_count=4, restart_attempts=3):
+                 push_off_options=None, conformer_count=4, restart_attempts=3,
+                 growth_backend='python'):
         """
         Initialize the Polymerizer.
 
@@ -124,6 +128,7 @@ class Polymerizer:
             check_bond_length = config.check_bond_length
             conformer_count = config.conformer_count
             restart_attempts = config.restart_attempts
+            growth_backend = config.growth_backend
             tacticity = config.tacticity
             tacticity_center = config.tacticity_center
         if push_off_options is not None and not isinstance(push_off_options, dict):
@@ -139,6 +144,9 @@ class Polymerizer:
         self.rollback = rollback
         self.retry_step = retry_step
         self.check_bond_length = check_bond_length
+        if not isinstance(growth_backend, str) or growth_backend not in {'python', 'rust'}:
+            raise ValueError("growth_backend must be 'python' or 'rust'")
+        self.growth_backend = growth_backend
         self.seed = seed
         if isinstance(conformer_count, bool) or not isinstance(conformer_count, int) or conformer_count < 1:
             raise ValueError('conformer_count must be a positive integer')
@@ -170,6 +178,11 @@ class Polymerizer:
 
         # Parse optimizer into a BaseOptimizer instance
         self.optimizer = self._parse_optimizer(optimizer)
+        if self.growth_backend == 'rust' and self.optimizer is not None:
+            raise ValueError(
+                "growth_backend='rust' does not support per-step optimizers; "
+                "pass optimizer=None. The final push-off still runs."
+            )
 
         self._last_attempts = 0
         self._last_rollbacks = 0
@@ -271,6 +284,9 @@ class Polymerizer:
         logger.info(f'Start polymerization: n={self.n}')
         if self.optimizer is not None:
             logger.info(f'Optimizer: {self.optimizer.name}')
+
+        if self.growth_backend == 'rust':
+            return self._build_raw_mol_rust(conformer_pools, restart_initial=restart_initial)
 
         poly_mol = utils.deepcopy_mol(self.monomers[0].mol)
         if restart_initial:
@@ -422,6 +438,58 @@ class Polymerizer:
             )
 
         self._apply_tacticity(poly_mol)
+        return poly_mol
+
+    def _build_raw_mol_rust(self, conformer_pools, *, restart_initial=False):
+        """Grow coordinates in Rust, then assemble one final RDKit molecule."""
+        from . import _rust_growth
+
+        coordinates, attempts, rollbacks, failed_step = _rust_growth.grow(
+            self.monomers,
+            conformer_pools,
+            bond_length=self.bond_length,
+            dihedral=self.dihedral,
+            random_rot=self.random_rot,
+            dist_min=self.dist_min,
+            check_bond_length=self.check_bond_length,
+            retry_step=self.retry_step,
+            retry=self.retry,
+            rollback=self.rollback,
+            seed=self.seed,
+            restart_initial=restart_initial,
+        )
+        self._last_attempts = attempts
+        self._last_rollbacks = rollbacks
+        if coordinates is None:
+            self._last_failure_reason = (
+                f'Rust growth failed at step {failed_step} after '
+                f'{self.retry_step} attempts per step and {self.retry} retries'
+            )
+            logger.warning(self._last_failure_reason)
+            return None
+
+        poly_mol = utils.deepcopy_mol(self.monomers[0].mol)
+        self._set_conformer_coordinates(poly_mol, coordinates[0])
+        for index in range(1, self.n):
+            piece = utils.deepcopy_mol(self.monomers[index].mol)
+            self._set_conformer_coordinates(piece, coordinates[index])
+            poly_mol = poly.assemble_mols_with_coordinates(
+                poly_mol, piece, coordinates[index]
+            )
+
+        expected_atoms = (
+            sum(m.mol.GetNumAtoms() for m in self.monomers) - 2 * (self.n - 1)
+        )
+        if poly_mol.GetNumAtoms() != expected_atoms:
+            raise RuntimeError(
+                f'Rust assembly returned {poly_mol.GetNumAtoms()} atoms; '
+                f'expected {expected_atoms}'
+            )
+        self._apply_tacticity(poly_mol)
+        logger.info(
+            'Rust growth complete. Attempts: %d, rollbacks: %d, atoms: %d',
+            attempts, rollbacks, poly_mol.GetNumAtoms(),
+        )
         return poly_mol
 
     def _apply_tacticity(self, mol):
@@ -609,9 +677,15 @@ class BuildResult:
 
 def build_polymer(smiles, units=_UNSET, *, target_atoms=_UNSET, tacticity='atactic',
                   tacticity_center=None,
-                  optimizer='mmff', optimizer_options=None, config=None, seed=None,
-                  push_off_options=None, conformer_count=4, restart_attempts=3):
+                  optimizer=_UNSET, optimizer_options=None, config=None, seed=None,
+                  push_off_options=None, conformer_count=4, restart_attempts=3,
+                  growth_backend='python'):
     """Build a polymer by repeat count or approximate final atom count."""
+    configured_backend = (
+        config.growth_backend if isinstance(config, BuildConfig) else growth_backend
+    )
+    if optimizer is _UNSET:
+        optimizer = None if configured_backend == 'rust' else 'mmff'
     units_given = units is not _UNSET
     target_atoms_given = target_atoms is not _UNSET
     if units_given and target_atoms_given:
@@ -638,6 +712,7 @@ def build_polymer(smiles, units=_UNSET, *, target_atoms=_UNSET, tacticity='atact
             push_off_options=push_off_options,
             conformer_count=conformer_count,
             restart_attempts=restart_attempts,
+            growth_backend=growth_backend,
         )
         return polymerizer.build()
     if not isinstance(units, int) or units < 1:
@@ -654,5 +729,6 @@ def build_polymer(smiles, units=_UNSET, *, target_atoms=_UNSET, tacticity='atact
         push_off_options=push_off_options,
         conformer_count=conformer_count,
         restart_attempts=restart_attempts,
+        growth_backend=growth_backend,
     )
     return polymerizer.build()

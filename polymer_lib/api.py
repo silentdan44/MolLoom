@@ -73,7 +73,8 @@ def _build(payload: dict) -> dict:
         payload,
         {
             "smiles", "units", "target_atoms", "tacticity", "tacticity_center",
-            "optimizer", "optimizer_options", "config", "seed", "push_off_options", "conformer_count", "restart_attempts",
+            "optimizer", "optimizer_options", "config", "seed", "push_off_options",
+            "conformer_count", "restart_attempts", "growth_backend",
         },
         "input",
     )
@@ -82,6 +83,7 @@ def _build(payload: dict) -> dict:
     kwargs = {key: payload[key] for key in (
         "units", "target_atoms", "tacticity", "tacticity_center", "optimizer",
         "optimizer_options", "seed", "push_off_options", "conformer_count", "restart_attempts",
+        "growth_backend",
     ) if key in payload}
     if "config" in payload:
         if not isinstance(payload["config"], dict):

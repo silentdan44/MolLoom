@@ -77,7 +77,8 @@ This section documents the public entry points and their return values. Distance
 build_polymer(smiles, units=None, *, target_atoms=None, tacticity='atactic',
               tacticity_center=None,
               optimizer='mmff', optimizer_options=None, config=None, seed=None,
-              push_off_options=None, conformer_count=4, restart_attempts=3)
+              push_off_options=None, conformer_count=4, restart_attempts=3,
+              growth_backend='python')
 ```
 
 Build a chain from one repeat-unit SMILES. The SMILES must contain exactly two `*` atoms for head and tail connection points. Specify either `units` (the repeat-unit count) or `target_atoms` (an approximate final atom count); target counts are rounded up to a whole number of repeat units.
@@ -96,6 +97,7 @@ Build a chain from one repeat-unit SMILES. The SMILES must contain exactly two `
 | `push_off_options` | Optional dictionary of `push_off_chain` keyword arguments. |
 | `conformer_count` | Number of precomputed monomer conformations, including the supplied geometry; default `4`. |
 | `restart_attempts` | Number of complete retries with new reproducible seeds after growth exhausts its rollback budget; default `3`. Set `0` to disable them. |
+| `growth_backend` | `'python'` by default, or `'rust'` to use the optional native coordinate-growth core. Rust mode skips per-step optimizers and still runs the final push-off. |
 
 The generator prepares and reuses alternative conformations for each distinct monomer graph and stereochemistry. At each growth step the next monomer conformation is drawn uniformly at random from the available pool. Rotation retries within that step use the same conformation; after a rollback a new conformation is drawn when growth resumes. The supplied initial monomer geometry is used first; after a rollback to the start it is drawn from its pool. Draws are independent and may repeat. A fixed seed makes preparation and selection reproducible within a given environment; a failed embedding is reported and the remaining conformations are used. If growth exhausts its rollback budget, it is automatically restarted with a reproducibly derived seed, up to `restart_attempts` times. These restarts are bounded and do not guarantee success. Push-off runs once, after successful growth.
 
@@ -276,6 +278,7 @@ Every field is optional. These are the defaults:
 | `check_bond_length` | `True` | Apply the built-in bond-length sanity check after each candidate. |
 | `conformer_count` | `4` | Number of prepared conformations per monomer type, including the supplied coordinates. |
 | `restart_attempts` | `3` | Maximum number of full-growth restarts with newly derived seeds. |
+| `growth_backend` | `'python'` | Growth implementation: `'python'` or optional `'rust'`. |
 | `tacticity` | `'atactic'` | Backbone stereochemistry: `'atactic'`, `'isotactic'`, `'syndiotactic'`, or a `+`/`-` sequence. |
 | `tacticity_center` | `None` | Monomer atom index for the polymerization stereocenter; defaults to the atom next to the tail linker. |
 
@@ -323,11 +326,35 @@ Polymerizer(
     retry_step=200, check_bond_length=True,
     optimizer=None, optimizer_options=None, config=None, seed=None,
     tacticity='atactic', tacticity_center=None, push_off_options=None,
-    conformer_count=4, restart_attempts=3,
+    conformer_count=4, restart_attempts=3, growth_backend='python',
 )
 ```
 
 `monomers` is a nonempty list of `Monomer` objects in chain order. The class defaults to `optimizer=None`; `build_polymer()` instead defaults to MMFF. `Polymerizer.from_smiles(smiles, count, **kwargs)` is a classmethod shortcut when every repeat unit uses the same SMILES. `build()` returns `BuildResult`; `build_mol()` returns the older RDKit `Mol`-or-`None` value for compatibility.
+
+Rust growth can also assemble copolymer sequences supplied through `Polymerizer(monomers=[...])`. Build the optional core and select it explicitly:
+
+```bash
+POLYMER_GENERATOR_BUILD_RUST=1 python -m pip install .
+```
+
+```python
+from polymer_lib import Monomer, Polymerizer
+
+monomers = [
+    Monomer('*CC*', seed=7),
+    Monomer('*CC(c1ccccc1)*', seed=8),
+    Monomer('*CC*', seed=9),
+]
+result = Polymerizer(
+    monomers,
+    growth_backend='rust',
+    optimizer=None,
+    seed=7,
+).build()
+```
+
+The Rust core places coordinate arrays and checks topology-aware nonbonded contacts without constructing an RDKit molecule for each trial. Python remains the default and continues to support per-step optimizers. Rust mode requires a Rust toolchain when installing with the build flag; without that flag, the package stays pure Python. Both growth modes retain the final push-off stage.
 
 ### Optimizers
 
@@ -390,7 +417,7 @@ The API contract is versioned and uses one request and one response per JSONL li
 }
 ```
 
-`request_id` is optional; when provided, it is echoed in the response. The `input` fields depend on `action`; unknown fields are rejected to catch misspellings. Exactly one `units` or `target_atoms` is required for `build`, matching the Python API. `tacticity` accepts `atactic`, `isotactic`, `syndiotactic`, or a `+`/`-` sequence. Optional `conformer_count` sets the size of the prepared monomer conformer pool; `restart_attempts` bounds automatic full-growth restarts. The optimizer can be `"mmff"`, `"openff"`, or `null`; `optimizer_options` is an object of optimizer-specific options. Optional `config` maps to `BuildConfig` and can set `bond_length`, `dihedral`, `random_rot`, `dist_min`, `retry`, `rollback`, `retry_step`, `check_bond_length`, `conformer_count`, and `restart_attempts` (as well as `tacticity` and `tacticity_center`).
+`request_id` is optional; when provided, it is echoed in the response. The `input` fields depend on `action`; unknown fields are rejected to catch misspellings. Exactly one `units` or `target_atoms` is required for `build`, matching the Python API. `tacticity` accepts `atactic`, `isotactic`, `syndiotactic`, or a `+`/`-` sequence. Optional `conformer_count` sets the size of the prepared monomer conformer pool; `restart_attempts` bounds automatic full-growth restarts. `growth_backend` accepts `"python"` or `"rust"`; Rust mode skips per-step optimization and still runs final push-off. The optimizer can be `"mmff"`, `"openff"`, or `null`; `optimizer_options` is an object of optimizer-specific options. Optional `config` maps to `BuildConfig` and can set `bond_length`, `dihedral`, `random_rot`, `dist_min`, `retry`, `rollback`, `retry_step`, `check_bond_length`, `conformer_count`, `restart_attempts`, and `growth_backend` (as well as `tacticity` and `tacticity_center`).
 
 Successful responses have `ok: true` and a `result`; failures have `ok: false` and a stable `error.code` plus a human-readable `error.message`. Result coordinates are self-contained text payloads, so clients need not share a filesystem with the container.
 
@@ -560,6 +587,8 @@ polymer_lib/
 ├── utils.py        # RDKit helpers and library logging
 ├── monomer.py      # RDKit monomer construction
 ├── polymerizer.py  # Chain growth, retries, and BuildResult
+├── _rust_growth.py # Optional ctypes adapter for the Rust growth core
+├── rust_growth/    # Optional native coordinate-growth implementation
 ├── push_off.py     # OpenMM soft-potential relaxation
 ├── packer.py       # Packmol box packing
 ├── poly.py         # Molecular connection and geometry logic
