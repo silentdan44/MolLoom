@@ -130,6 +130,42 @@ def combine_mols(mol1, mol2, res_name_1='RU0', res_name_2='RU0'):
     return mol
 
 
+def assemble_mols_with_coordinates(mol1, mol2, mol2_coordinates,
+                                  res_name_1='RU0', res_name_2='RU0'):
+    """Join two monomers using already-positioned coordinates for mol2.
+
+    This keeps RDKit graph assembly separate from coordinate search so a
+    geometry backend can try placements without allocating candidate Mol
+    objects.
+    """
+    mol1_n = mol1.GetNumAtoms()
+    coordinates = np.asarray(mol2_coordinates, dtype=float)
+    if coordinates.shape != (mol2.GetNumAtoms(), 3):
+        raise ValueError('mol2_coordinates must have shape (num_atoms, 3)')
+
+    mol = combine_mols(mol1, mol2, res_name_1=res_name_1, res_name_2=res_name_2)
+    for i in range(mol2.GetNumAtoms()):
+        mol.GetConformer(0).SetAtomPosition(
+            i + mol1_n,
+            Geom.Point3D(coordinates[i, 0], coordinates[i, 1], coordinates[i, 2])
+        )
+
+    mol = utils.remove_atom(mol, mol2.GetIntProp('head_idx') + mol1_n)
+    mol = utils.remove_atom(mol, mol1.GetIntProp('tail_idx'))
+
+    tail_ne_idx = mol1.GetIntProp('tail_ne_idx')
+    head_ne_idx = mol1_n - 1 + mol2.GetIntProp('head_ne_idx')
+    if mol1.GetIntProp('tail_ne_idx') > mol1.GetIntProp('tail_idx'):
+        tail_ne_idx -= 1
+    if mol2.GetIntProp('head_ne_idx') > mol2.GetIntProp('head_idx'):
+        head_ne_idx -= 1
+    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE)
+
+    Chem.SanitizeMol(mol)
+    set_linker_flag(mol)
+    return mol
+
+
 def connect_mols(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=False,
                  set_linker=True, label1=1, label2=1,
                  confId1=0, confId2=0,
@@ -192,41 +228,14 @@ def connect_mols(mol1, mol2, bond_length=1.5, dihedral=np.pi, random_rot=False,
             rad=True
         )
     mol2_coord_rot = calc.rotate_rod(
-        mol2_coord_rot, -mol1_tail_vec, (dihedral - dih),
+        mol2_coord_rot, -mol1_tail_vec, (dih - dihedral),
         center=mol2_coord_rot[mol2.GetIntProp('head_ne_idx')]
     )
 
-    # Combining mol1 and mol2
-    mol = combine_mols(mol1, mol2, res_name_1=res_name_1, res_name_2=res_name_2)
-
-    # Set atomic coordinate
-    for i in range(mol2.GetNumAtoms()):
-        mol.GetConformer(0).SetAtomPosition(
-            i + mol1_n,
-            Geom.Point3D(mol2_coord_rot[i, 0], mol2_coord_rot[i, 1], mol2_coord_rot[i, 2])
-        )
-
-    # ============================================================
-    # Delete linker atoms and bonds
-    # RADONPY 0.2.9 LOGIC
-    # ============================================================
-    mol = utils.remove_atom(mol, mol2.GetIntProp('head_idx') + mol1_n)
-    mol = utils.remove_atom(mol, mol1.GetIntProp('tail_idx'))
-
-    # Add a new bond
-    tail_ne_idx = mol1.GetIntProp('tail_ne_idx')
-    head_ne_idx = mol1_n - 1 + mol2.GetIntProp('head_ne_idx')
-    if mol1.GetIntProp('tail_ne_idx') > mol1.GetIntProp('tail_idx'):
-        tail_ne_idx -= 1
-    if mol2.GetIntProp('head_ne_idx') > mol2.GetIntProp('head_idx'):
-        head_ne_idx -= 1
-    mol = utils.add_bond(mol, tail_ne_idx, head_ne_idx, order=Chem.rdchem.BondType.SINGLE)
-
-    # Finalize
-    Chem.SanitizeMol(mol)
-    set_linker_flag(mol)
-
-    return mol
+    return assemble_mols_with_coordinates(
+        mol1, mol2, mol2_coord_rot,
+        res_name_1=res_name_1, res_name_2=res_name_2
+    )
 
 
 def check_3d_proximity(coord1, coord2=None, dist_min=0.7, ignore_rad=3, dmat=None):

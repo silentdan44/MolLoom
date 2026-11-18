@@ -1,9 +1,11 @@
-# Polymer Generator
+# MolLoom
 
 A Python library for building 3D polymer structures with automatic retry/rollback logic, force field optimization, and export to multiple simulation formats (OpenMM, LAMMPS, GROMACS).
 
+[GitHub repository](https://github.com/silentdan44/MolLoom)
+
 <p align="center">
-  <img src="assets/poly.png" alt="Polymer Generator" width="400"/>
+  <img src="assets/poly.png" alt="MolLoom" width="400"/>
 </p>
 
 ## Features
@@ -12,55 +14,49 @@ A Python library for building 3D polymer structures with automatic retry/rollbac
 - **Polymerization**: Self-avoiding random walk with retry/rollback mechanism
 - **Geometry Optimization**: MMFF94s or OpenFF with NAGL charges
 - **Packing**: Pack multiple chains into periodic boxes using Packmol
-- **Export**: Save to OpenMM XML, LAMMPS data files, GROMACS topology, PDB
+- **Export**: Write OpenMM, LAMMPS, GROMACS, or PDB files through OpenFF Interchange
 - **Performance**: Numba-accelerated geometry calculations
 
 ## Installation
 
-The recommended setup uses [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html).
-Install micromamba once, then run these commands from the repository root.
+Docker is the recommended way to run the complete workflow, including OpenFF, OpenMM, push-off, and packing. From the repository root:
 
-### Core package (RDKit and MMFF)
+```bash
+docker build -t molloom .
+echo '{"api_version":"1.0","request_id":"demo-1","action":"build","input":{"smiles":"*CC(c1ccccc1)*","units":3,"seed":7}}' | docker run --rm -i molloom
+```
+
+The container runs the JSON Lines API by default. See [JSON API and container runner](#json-api-and-container-runner) for request formats and actions. To run the test suite in the full environment:
+
+```bash
+docker run --rm molloom python -m pytest -q
+```
+
+### Install the Python package from GitHub
+
+First create and activate the conda-forge environment described below, then install MolLoom from its repository:
+
+```bash
+python -m pip install --no-deps "git+https://github.com/silentdan44/MolLoom.git"
+```
+
+OpenFF and NAGL dependencies are most reliably installed with the conda-forge environment below. Chain generation requires that environment, including OpenMM and NAGL models.
+
+### Local development with the full environment
+
+Install [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html), then run from the repository root. RDKit is pinned to 2024.09.6 because a chain-growth regression was observed with 2026.09.1:
 
 ```bash
 micromamba create -f environment.yml
-micromamba activate polymer-generator
-python -c "from polymer_lib import Monomer, Polymerizer; print('polymer_lib is ready')"
+micromamba activate molloom
+python -m pip install --no-deps --editable .
+python -m pytest -q
 ```
-
-The environment file installs the project in editable mode, so code changes are immediately available without reinstalling.
-
-### Install the package from GitHub
-
-After replacing `<github-user>` and `<repository>` with the GitHub owner and repository name, users can install the latest version directly:
-
-```bash
-python -m pip install "git+https://github.com/<github-user>/<repository>.git"
-```
-
-For a clean environment with the required scientific dependencies, create the micromamba environment first, then install from GitHub instead of the local checkout:
-
-```bash
-micromamba create -n polymer-generator -c conda-forge python=3.11 pip rdkit numpy scipy numba tqdm
-micromamba run -n polymer-generator python -m pip install "git+https://github.com/<github-user>/<repository>.git"
-```
-
-### Full environment (OpenFF, NAGL and Packmol)
-
-```bash
-micromamba create -f environment-openff.yml
-micromamba activate polymer-generator-openff
-python -c "from polymer_lib import Monomer, Polymerizer, OpenFFOptimizer; from polymer_lib.packer import PackmolPacker; print('full environment is ready')"
-```
-
-To use only the OpenFF optimizer from an existing core environment, install the optional Python extra with `python -m pip install -e ".[openff]"`; Packmol support is provided by the full environment.
-
-Run the geometry and polymerization checks with `python -m pytest`.
 
 ## Quick Start
 ### Build a chain in one call
 
-`build_polymer` handles monomer creation, repeat expansion, and polymerization. The result carries the molecule and run diagnostics.
+`build_polymer` handles monomer creation, repeat expansion, polymerization, and push-off relaxation. The result carries the molecule and run diagnostics.
 
 ```python
 from polymer_lib import build_polymer
@@ -73,40 +69,6 @@ polymer = result.molecule
 print(f"built in {result.elapsed_seconds:.1f}s; attempts={result.attempts}")
 ```
 
-### Configure a build
-
-Use `BuildConfig` to group geometric and retry settings. The default `dist_min=0.7` checks nonbonded heavy-atom contacts across the full current chain. Set `seed` to make both the initial monomer conformer and random growth rotations reproducible.
-
-```python
-from polymer_lib import BuildConfig, Polymerizer
-
-polymerizer = Polymerizer.from_smiles(
-    '*CC(c1ccccc1)*',
-    count=20,
-    config=BuildConfig(dist_min=0.7, retry=100, rollback=5),
-    optimizer='mmff',
-    optimizer_options={'max_iters': 1000},
-    seed=7,
-)
-result = polymerizer.build()
-if result.success:
-    polymer = result.molecule
-```
-
-The advanced API still accepts a list of `Monomer` objects. `build()` now returns a `BuildResult`; use `build_mol()` if existing code needs the older molecule-or-`None` return value.
-
-### Pack chains
-
-For default packing settings, use the helper function:
-
-```python
-from polymer_lib.packer import pack_chains
-
-topology = pack_chains(chains, density=0.3)
-```
-
-Use `PackmolPacker` directly when you need to configure retry count or tolerance.
-
 ## API Reference
 
 This section documents the public entry points and their return values. Distances are in ångströms unless a parameter says otherwise.
@@ -116,7 +78,9 @@ This section documents the public entry points and their return values. Distance
 ```python
 build_polymer(smiles, units=None, *, target_atoms=None, tacticity='atactic',
               tacticity_center=None,
-              optimizer='mmff', optimizer_options=None, config=None, seed=None)
+              optimizer='mmff', optimizer_options=None, config=None, seed=None,
+              push_off_options=None, conformer_count=4, restart_attempts=3,
+              growth_backend='python')
 ```
 
 Build a chain from one repeat-unit SMILES. The SMILES must contain exactly two `*` atoms for head and tail connection points. Specify either `units` (the repeat-unit count) or `target_atoms` (an approximate final atom count); target counts are rounded up to a whole number of repeat units.
@@ -131,9 +95,82 @@ Build a chain from one repeat-unit SMILES. The SMILES must contain exactly two `
 | `optimizer` | `'mmff'` by default; use `'openff'`, an optimizer object, or `None` to skip optimization. |
 | `optimizer_options` | Keyword arguments for a named optimizer, e.g. `{'max_iters': 1000}`. Must be a dictionary and requires a string optimizer name. |
 | `config` | Optional `BuildConfig` for geometry and retry settings. |
-| `seed` | Integer seed for both the initial conformer and random growth rotations; RDKit accepts 0 through 2³¹−1. |
+| `seed` | Integer seed for initial conformer, growth rotations and push-off unless overridden; RDKit accepts 0 through 2³¹−1. |
+| `push_off_options` | Optional dictionary of `push_off_chain` keyword arguments. |
+| `conformer_count` | Number of precomputed monomer conformations, including the supplied geometry; default `4`. |
+| `restart_attempts` | Number of complete retries with new reproducible seeds after growth exhausts its rollback budget; default `3`. Set `0` to disable them. |
+| `growth_backend` | `'python'` by default, or `'rust'` to use the optional native coordinate-growth core. Rust mode skips per-step optimizers and still runs the final push-off. |
+
+The generator prepares and reuses alternative conformations for each distinct monomer graph and stereochemistry. At each growth step the next monomer conformation is drawn uniformly at random from the available pool. Rotation retries within that step use the same conformation; after a rollback a new conformation is drawn when growth resumes. The supplied initial monomer geometry is used first; after a rollback to the start it is drawn from its pool. Draws are independent and may repeat. A fixed seed makes preparation and selection reproducible within a given environment; a failed embedding is reported and the remaining conformations are used. If growth exhausts its rollback budget, it is automatically restarted with a reproducibly derived seed, up to `restart_attempts` times. These restarts are bounded and do not guarantee success. Push-off runs once, after successful growth.
 
 Returns `BuildResult`. Invalid SMILES, linkers, unit counts, or options raise exceptions. Exhausting retries returns a result with `success == False` and a `failure_reason`.
+
+### `push_off_chain`
+
+```python
+push_off_chain(mol, *, forcefield='openff-2.1.0.offxml', steps=1000,
+               stages=10, temperature=300.0, timestep=1.0, friction=1.0,
+               amplitude=25.0, cutoff_scale=1.5, seed=None, platform='CPU',
+               soft_minimize=True, soft_minimize_max_iters=200,
+               soft_minimize_tolerance=10.0,
+               minimize=True, max_iters=200, tolerance=10.0)
+```
+
+This relaxes a **completed, single polymer chain** and is automatically run by chain generation. It can also be called on an existing molecule. It requires OpenFF, OpenMM, and NAGL. The function returns a **copy** of the input RDKit molecule with updated conformer coordinates; it does not mutate the input molecule.
+
+The workflow is:
+
+1. Convert the RDKit chain into an OpenFF molecule, assign NAGL partial charges, and parameterize it with the selected OpenFF force field.
+2. Keep bonded force-field terms active. Temporarily turn off the regular Lennard-Jones and electrostatic terms and add a finite, pairwise cosine repulsion:
+
+   ```text
+   U(r) = 0.5 * A * (1 + cos(pi * r / rc))   for r < rc
+   U(r) = 0                                  for r >= rc
+   rc   = cutoff_scale * (sigma_i + sigma_j) / 2
+   ```
+
+   Here `A` is the current repulsion amplitude and `sigma_i`, `sigma_j` are the atoms' Lennard-Jones size parameters from the selected force field. This potential has energy `A` at full overlap and smoothly reaches zero at its cutoff.
+3. By default, set the soft repulsion to its first amplitude level (`A=amplitude/stages`) and minimize the geometry under that soft system before starting dynamics. This lets the soft force begin resolving overlaps before velocities are assigned.
+4. Run Langevin dynamics in `stages` segments. At the start of each segment, increase `A` linearly from `amplitude/stages` through `amplitude`; the amplitude is held fixed during that segment. The total number of integration steps is `steps`, split as evenly as possible across segments.
+5. Restore the original OpenFF nonbonded parameters. By default, run a final energy minimization with the full physical force field.
+
+The soft-potential parameters are **not automatically fitted** to reproduce the force field. The selected force field supplies the LJ sigma values that set each pair's soft cutoff; `amplitude`, `cutoff_scale`, and the dynamics settings are protocol parameters supplied by this function or by the caller. Regular electrostatics and LJ energies are absent during the soft minimization and Langevin stages, and are restored for the final minimization.
+
+| Argument | Default | Meaning |
+| --- | ---: | --- |
+| `mol` | required | Completed RDKit molecule with explicit hydrogens and a 3D conformer. |
+| `forcefield` | `'openff-2.1.0.offxml'` | OpenFF force field used for parameterization and final minimization. |
+| `charge_method` | installed default NAGL model | Partial charge model. Set explicitly to choose another available NAGL model. |
+| `steps` | `1000` | Total Langevin integration steps. With the default 1 fs timestep this is 1 ps of dynamics. |
+| `stages` | `10` | Number of amplitude levels; default is 100 steps per level. Must be between 1 and `steps`. |
+| `temperature` | `300.0` K | Langevin thermostat temperature. |
+| `timestep` | `1.0` fs | Langevin integrator timestep. |
+| `friction` | `1.0` ps⁻¹ | Langevin friction coefficient. |
+| `amplitude` | `25.0` kJ/mol | Maximum energy of the soft pair interaction at `r=0`, reached in the last stage. |
+| `cutoff_scale` | `1.5` | Multiplier for the arithmetic mean of the pair's LJ sigma values. |
+| `seed` | `None` | Optional integer seed for the integrator and initial velocities. |
+| `platform` | `'CPU'` | OpenMM platform, such as `'CPU'` or `'CUDA'`. |
+| `soft_minimize` | `True` | Run minimization with the initial soft system before dynamics. |
+| `soft_minimize_max_iters` | `200` | Maximum soft-minimizer iterations. |
+| `soft_minimize_tolerance` | `10.0` kJ/(mol·nm) | Force tolerance for the soft minimizer. |
+| `minimize` | `True` | Run physical OpenFF minimization after dynamics and restoring nonbonded terms. |
+| `max_iters` | `200` | Maximum iterations for the final physical minimizer. |
+| `tolerance` | `10.0` kJ/(mol·nm) | Force tolerance for the final physical minimizer. |
+
+Setting `soft_minimize=False` skips the initial soft minimization. Setting `minimize=False` skips the final physical minimization and returns coordinates after soft dynamics; in that case, the physical interactions are still restored in the parameterized OpenMM system before it is discarded.
+
+```python
+from polymer_lib import build_polymer
+from polymer_lib.packer import pack_chains
+
+result = build_polymer(
+    '*CC(c1ccccc1)*', units=12, optimizer=None, seed=7,
+    push_off_options={'steps': 1000, 'stages': 10, 'amplitude': 25.0},
+)
+if not result.success:
+    raise RuntimeError(result.failure_reason)
+topology = pack_chains([result.molecule], density=0.3)
+```
 
 ```python
 from polymer_lib import build_polymer
@@ -210,16 +247,18 @@ chain = build_polymer(
 )
 ```
 
-Set `optimizer=None` to assemble and validate coordinates without force-field minimization. This is faster, but it does not relax the geometry energetically.
+Set `optimizer=None` to skip force-field minimization during chain growth. Successful builds still receive the final chain push-off described below; it is overlap relaxation, not full physical equilibration.
 
 ### `BuildResult`
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `molecule` | RDKit `Mol` or `None` | Built chain with 3D coordinates, or `None` after retry exhaustion. |
+| `molecule` | RDKit `Mol` or `None` | Relaxed chain, or `None` after retry exhaustion. |
+| `raw_molecule` | RDKit `Mol` or `None` | Chain coordinates before push-off, for diagnostics. |
 | `success` | `bool` property | True when `molecule` is present. |
 | `attempts` | `int` | Number of candidate connections tried across the run. |
-| `rollbacks` | `int` | Number of rollback/restart events. |
+| `rollbacks` | `int` | Total rollback events across all growth attempts. |
+| `restarts` | `int` | Number of automatic full-growth restarts. |
 | `elapsed_seconds` | `float` | Wall-clock build time. |
 | `failure_reason` | `str` or `None` | Failure summary, or `None` on success. |
 
@@ -239,6 +278,9 @@ Every field is optional. These are the defaults:
 | `rollback` | `5` | Successful growth steps to undo after a failed step. |
 | `retry_step` | `200` | Candidate connections allowed at each step. |
 | `check_bond_length` | `True` | Apply the built-in bond-length sanity check after each candidate. |
+| `conformer_count` | `4` | Number of prepared conformations per monomer type, including the supplied coordinates. |
+| `restart_attempts` | `3` | Maximum number of full-growth restarts with newly derived seeds. |
+| `growth_backend` | `'python'` | Growth implementation: `'python'` or optional `'rust'`. |
 | `tacticity` | `'atactic'` | Backbone stereochemistry: `'atactic'`, `'isotactic'`, `'syndiotactic'`, or a `+`/`-` sequence. |
 | `tacticity_center` | `None` | Monomer atom index for the polymerization stereocenter; defaults to the atom next to the tail linker. |
 
@@ -285,17 +327,58 @@ Polymerizer(
     random_rot=True, dist_min=0.7, retry=100, rollback=5,
     retry_step=200, check_bond_length=True,
     optimizer=None, optimizer_options=None, config=None, seed=None,
-    tacticity='atactic', tacticity_center=None,
+    tacticity='atactic', tacticity_center=None, push_off_options=None,
+    conformer_count=4, restart_attempts=3, growth_backend='python',
 )
 ```
 
 `monomers` is a nonempty list of `Monomer` objects in chain order. The class defaults to `optimizer=None`; `build_polymer()` instead defaults to MMFF. `Polymerizer.from_smiles(smiles, count, **kwargs)` is a classmethod shortcut when every repeat unit uses the same SMILES. `build()` returns `BuildResult`; `build_mol()` returns the older RDKit `Mol`-or-`None` value for compatibility.
 
+Rust growth can also assemble copolymer sequences supplied through `Polymerizer(monomers=[...])`. Build the optional core and select it explicitly:
+
+```bash
+MOLLOOM_BUILD_RUST=1 python -m pip install .
+```
+
+```python
+from polymer_lib import Monomer, Polymerizer
+
+monomers = [
+    Monomer('*CC*', seed=7),
+    Monomer('*CC(c1ccccc1)*', seed=8),
+    Monomer('*CC*', seed=9),
+]
+result = Polymerizer(
+    monomers,
+    growth_backend='rust',
+    optimizer=None,
+    seed=7,
+).build()
+```
+
+The Rust core places coordinate arrays and checks topology-aware nonbonded contacts without constructing an RDKit molecule for each trial. Python remains the default and continues to support per-step optimizers. Rust mode requires a Rust toolchain when installing with the build flag; without that flag, the package stays pure Python. Both growth modes retain the final push-off stage.
+
 ### Optimizers
 
 - **MMFF94s:** `optimizer='mmff'`. Defaults: `max_iters=1000`, `variant='MMFF94s'`, `non_bonded_thresh=3.0 Å`. Example options: `optimizer_options={'max_iters': 1500, 'variant': 'MMFF94'}`. Nonconvergence rejects that candidate and invokes retry logic.
 - **OpenFF:** `optimizer='openff'` or an `OpenFFOptimizer` object. Constructor defaults: `forcefield='openff-2.1.0.offxml'`, `max_iters=50`, platform `CPU`, tolerance `10.0 kJ/(mol·nm)`, and the installed default NAGL charge model. Install the full environment to use it.
-- **None:** assemble and validate coordinates without energy minimization.
+- **None:** assemble and validate coordinates without energy minimization at each growth step. `build()` still runs the final chain push-off stage.
+
+To skip per-step geometry optimization and apply only the final push-off:
+
+```python
+result = build_polymer(
+    '*CC(c1ccccc1)*',
+    units=12,
+    optimizer=None,
+    seed=7,
+    push_off_options={'steps': 1000, 'stages': 10},
+)
+```
+
+The final push-off is enabled by default for successful builds; `push_off_options` tunes it. It requires the OpenFF/Interchange/NAGL/OpenMM dependencies.
+
+Push-off is part of chain generation. It performs overlap relaxation; it does not pack chains or replace full physical equilibration.
 
 You can pass a configured optimizer instance instead of a string:
 
@@ -307,7 +390,7 @@ result = Polymerizer(monomers, optimizer=MMFFOptimizer(max_iters=1000)).build()
 
 ### Packing
 
-`pack_chains(chains, density=0.3, max_attempts=5, tolerance=2.0)` is the convenience wrapper. It takes a nonempty list of RDKit molecules and returns an OpenFF `Topology` with periodic box vectors.
+`pack_chains(chains, density=0.3, max_attempts=5, tolerance=2.0, timeout=60, seed=None)` is the convenience wrapper. It takes a nonempty list of RDKit molecules and returns an OpenFF `Topology` with periodic box vectors.
 
 ```python
 from polymer_lib.packer import pack_chains
@@ -316,139 +399,201 @@ chains = [item.molecule for item in successful_results]
 topology = pack_chains(chains, density=0.3)
 ```
 
-For direct control, use `PackmolPacker(density=0.3, max_attempts=5, tolerance=2.0).pack(chains)`. Density is in g/mL; tolerance is in Å. Packing requires the OpenFF/Interchange/Packmol dependencies in the full environment.
+Before Packmol runs, the packer checks for severe non-local self-overlaps (excluding atoms connected by up to three bonds). It reports the chain and atom indices on failure. The threshold is half the mean of the van der Waals radii, so this is a severe-clash heuristic, not a complete physical validity test. It estimates a conservative starting density from chain dimensions. For systems of at least 1000 atoms, it may pack dilute and gradually compress the full periodic box while moving and rotating chains as rigid bodies. If Packmol or box compression fails, it retries at progressively lower densities, then creates a randomized periodic lattice with guaranteed clearance and attempts a whole-box rigid-body push-off toward the target density. If that final compression cannot reach the target, the safe lower-density system is returned; inspect `packer.effective_density` for the actual density. This is geometric packing, not force-field minimization or physical equilibration. For direct control, use `PackmolPacker(density=0.3, max_attempts=5, tolerance=2.0, timeout=60, seed=None).pack(chains)` and inspect `packer.initial_pack_density` and `packer.effective_density`. Density is in g/mL; tolerance is in Å. Each Packmol attempt runs in an isolated process with its own seed and a `timeout` in seconds (default 60); if an attempt times out, it and its child processes are terminated. The full route requires OpenFF/Interchange/Packmol dependencies; the randomized periodic fallback still requires OpenFF Toolkit.
+
+### JSON API and container runner
+
+The API contract is versioned and uses one request and one response per JSONL line. The request envelope is:
+
+```json
+{
+  "api_version": "1.0",
+  "request_id": "job-42",
+  "action": "build",
+  "input": {
+    "smiles": "*CC(c1ccccc1)*",
+    "units": 8,
+    "tacticity": "atactic",
+    "seed": 7
+  }
+}
+```
+
+`request_id` is optional; when provided, it is echoed in the response. The `input` fields depend on `action`; unknown fields are rejected to catch misspellings. Exactly one `units` or `target_atoms` is required for `build`, matching the Python API. `tacticity` accepts `atactic`, `isotactic`, `syndiotactic`, or a `+`/`-` sequence. Optional `conformer_count` sets the size of the prepared monomer conformer pool; `restart_attempts` bounds automatic full-growth restarts. `growth_backend` accepts `"python"` or `"rust"`; Rust mode skips per-step optimization and still runs final push-off. The optimizer can be `"mmff"`, `"openff"`, or `null`; `optimizer_options` is an object of optimizer-specific options. Optional `config` maps to `BuildConfig` and can set `bond_length`, `dihedral`, `random_rot`, `dist_min`, `retry`, `rollback`, `retry_step`, `check_bond_length`, `conformer_count`, `restart_attempts`, and `growth_backend` (as well as `tacticity` and `tacticity_center`).
+
+Successful responses have `ok: true` and a `result`; failures have `ok: false` and a stable `error.code` plus a human-readable `error.message`. Result coordinates are self-contained text payloads, so clients need not share a filesystem with the container.
+
+```json
+{
+  "api_version": "1.0",
+  "request_id": "job-42",
+  "ok": true,
+  "result": {
+    "molecule": {"format": "mol", "data": "... MOL block ..."},
+    "properties": {"atoms": 123, "heavy_atoms": 43, "formula": "C32H48"},
+    "diagnostics": {"attempts": 1, "rollbacks": 0, "elapsed_seconds": 0.3}
+  }
+}
+```
+
+Supported actions:
+
+| Action | Required input | Result |
+| --- | --- | --- |
+| `build` | `smiles` and exactly one of `units` or `target_atoms` | MOL block, atom counts, formula, and build diagnostics |
+| `push_off` | `molecule` (`format: "mol"` or `"sdf"`, with coordinates) | Relaxed MOL block and molecule properties |
+| `pack` | nonempty `molecules` array of coordinate-bearing MOL/SDF objects | OpenFF Topology JSON and PDB text with periodic box |
+| `build_push_off_pack` | nested `build` settings; optional `chain_count`, `push_off`, and `pack` objects | Build and relaxed chain structures plus the packed OpenFF Topology JSON and PDB |
+
+For `push_off`, additional input fields map to the corresponding `push_off_chain` keyword arguments (`steps`, `stages`, `temperature`, `seed`, `soft_minimize`, and others). For `pack`, optional inputs are `density` in g/mL, `max_attempts`, `tolerance` in Å, `timeout` in seconds per attempt, and `seed`. A `build` result is already relaxed; `push_off_options` configures that stage. The `pack` result includes `properties.initial_density_g_ml` (the final starting density for simulation) and `properties.packmol_density_g_ml` (the density used in the initial Packmol placement). A `pack` action takes an array of such molecules.
+
+Use `build_push_off_pack` to run all three stages within one request. `chain_count` defaults to `1`; when multiple chains are requested, provided build and push-off seeds are incremented per chain to generate distinct reproducible trajectories. `push_off` and `pack` are option objects corresponding to the options of the standalone actions. Each stage's outputs are returned under `result.build`, `result.push_off`, and `result.pack`. If a stage fails, the response uses `PIPELINE_STAGE_FAILED` and names the stage in the error message.
+
+```json
+{
+  "api_version": "1.0",
+  "request_id": "full-run-1",
+  "action": "build_push_off_pack",
+  "input": {
+    "build": {
+      "smiles": "*CC(c1ccccc1)*",
+      "units": 8,
+      "optimizer": null,
+      "seed": 7
+    },
+    "chain_count": 4,
+    "push_off": {"steps": 1000, "stages": 10, "seed": 20},
+    "pack": {"density": 0.3, "max_attempts": 5, "tolerance": 2.0}
+  }
+}
+```
+
+When the runner is called through Docker, keep stdin open (`-i`) and read stdout line by line. The same protocol can be used over any future transport: decode a request object, call `polymer_lib.api.handle_request`, then encode the response object.
+
+### Save a prepared chain for OpenMM MD
+
+`push_off_chain` returns a relaxed RDKit molecule. To continue with a separate OpenMM simulation, parameterize that relaxed geometry into an OpenFF `Interchange`, then save both the portable OpenFF representation and the engine-specific OpenMM files. The example below writes:
+
+| File | Contents |
+| --- | --- |
+| `chain.pdb` | OpenMM topology and starting coordinates. PDB does not store force-field parameters or velocities. |
+| `system.xml` | OpenMM System, including masses, constraints, and force-field terms. |
+| `integrator.xml` | Integrator settings needed to construct the resumed Simulation. |
+| `state.xml` | OpenMM State snapshot, including positions, velocities, and box vectors where present. |
+| `interchange.json` | OpenFF Interchange JSON with chemical topology, force-field parameters, and coordinates. |
+
+This example assigns the same default NAGL model policy used by `push_off_chain` and initializes velocities at 300 K. Replace the force field, charge model, timestep, and temperature with the settings intended for the production run.
+
+```python
+from pathlib import Path
+
+import openmm
+from openmm import unit
+from openmm.app import PDBFile, Simulation
+from openff.interchange import Interchange
+from openff.nagl_models import list_available_nagl_models
+from openff.toolkit import ForceField, Molecule
+from openff.toolkit.utils.toolkits import GLOBAL_TOOLKIT_REGISTRY
+from polymer_lib import build_polymer
+
+result = build_polymer('*CC(c1ccccc1)*', units=12, optimizer=None, seed=7)
+if not result.success:
+    raise RuntimeError(result.failure_reason)
+
+chain = result.molecule
+
+# Parameterize the already-relaxed coordinates for the production system.
+try:
+    off_mol = Molecule.from_rdkit(chain)
+except Exception:
+    off_mol = Molecule.from_rdkit(chain, allow_undefined_stereo=True)
+charge_model = list_available_nagl_models()[-1]
+off_mol.assign_partial_charges(
+    partial_charge_method=charge_model,
+    toolkit_registry=GLOBAL_TOOLKIT_REGISTRY,
+)
+forcefield = ForceField('openff-2.1.0.offxml')
+interchange = Interchange.from_smirnoff(
+    force_field=forcefield,
+    topology=[off_mol],
+    charge_from_molecules=[off_mol],
+)
+
+system = interchange.to_openmm_system()
+topology = interchange.to_openmm_topology()
+positions = interchange.positions.to_openmm()
+integrator = openmm.LangevinMiddleIntegrator(
+    300 * unit.kelvin,
+    1 / unit.picosecond,
+    2 * unit.femtoseconds,
+)
+simulation = Simulation(topology, system, integrator)
+simulation.context.setPositions(positions)
+simulation.context.setVelocitiesToTemperature(300 * unit.kelvin, 7)
+
+out = Path('md_start')
+out.mkdir(exist_ok=True)
+with (out / 'system.xml').open('w') as file:
+    file.write(openmm.XmlSerializer.serialize(system))
+with (out / 'integrator.xml').open('w') as file:
+    file.write(openmm.XmlSerializer.serialize(integrator))
+state = simulation.context.getState(getPositions=True, getVelocities=True)
+with (out / 'state.xml').open('w') as file:
+    file.write(openmm.XmlSerializer.serialize(state))
+with (out / 'chain.pdb').open('w') as file:
+    PDBFile.writeFile(topology, positions, file)
+(out / 'interchange.json').write_text(interchange.model_dump_json(indent=2))
+
+# Optional exact checkpoint. Load only with a compatible OpenMM version,
+# platform, and hardware; unlike state.xml, it also stores RNG internals.
+simulation.saveCheckpoint(str(out / 'checkpoint.chk'))
+```
+
+To resume from the portable XML State, reconstruct the Simulation from the PDB topology, System, and integrator, then load the saved State:
+
+```python
+import openmm
+from openmm.app import PDBFile, Simulation
+
+pdb = PDBFile('md_start/chain.pdb')
+with open('md_start/system.xml') as file:
+    system = openmm.XmlSerializer.deserialize(file.read())
+with open('md_start/integrator.xml') as file:
+    integrator = openmm.XmlSerializer.deserialize(file.read())
+
+simulation = Simulation(pdb.topology, system, integrator)
+simulation.loadState('md_start/state.xml')
+simulation.step(100_000)
+simulation.saveState('md_start/state_after_run.xml')
+```
+
+`state.xml` is the portable restart option: it restores positions and velocities, but not the integrator's random-number generator state, so the continued stochastic trajectory will not be bitwise identical. `checkpoint.chk` stores more internal state and supports exact continuation only with a compatible OpenMM version, platform, and hardware. Keep `system.xml`, `integrator.xml`, and `chain.pdb` together with either restart file. The `interchange.json` can be loaded with `Interchange.model_validate_json(...)`; it preserves the OpenFF representation for inspection or system reconstruction. Interchange JSON compatibility across versions is not guaranteed, so record package versions alongside long-lived simulation inputs.
 
 ### Test suite
 
 From the repository root, activate the development environment and run:
 
 ```bash
-micromamba activate polymer-generator
+micromamba activate molloom
 python -m pytest -q
 ```
 
 The current tests cover connectivity, RDKit sanitization, bond-length bounds, the exact requested length of a new inter-unit bond, nonbonded heavy-atom distances for chains up to 20 units, mixed monomer sizes, seeded reproducibility, and MMFF optimization on a two-unit chain. The 20-unit check skips energy minimization; the MMFF test covers a short chain. These are structural regression checks, not a validation of polymer thermodynamics or application-specific simulation results.
 
-### Advanced: build a single polymer chain
-```python
-from polymer_lib import Monomer, Polymerizer
-
-
-smiles = '*CC(c1ccccc1)*'  # Polystyrene
-monomer = Monomer(smiles)
-monomers_array = [monomer.copy() for _ in range(20)]
-
-polymerizer = Polymerizer(
-    monomers=monomers_array,
-    random_rot=True,
-    dist_min=0.7,
-    retry=100,
-    rollback=5,
-    retry_step=200,
-    optimizer='mmff'  # or 'openff' for higher accuracy
-)
-
-result = polymerizer.build()
-polymer = result.molecule if result.success else None
-```
-### 2. Pack Multiple Chains
-```python
-from polymer_lib.packer import PackmolPacker
-
-
-chains = []
-for i in range(5):
-    monomers_array = [monomer.copy() for _ in range(20)]
-    polymerizer = Polymerizer(
-        monomers=monomers_array,
-        optimizer='mmff'
-    )
-    result = polymerizer.build()
-    if not result.success:
-        raise RuntimeError(result.failure_reason)
-    chains.append(result.molecule)
-
-packer = PackmolPacker(
-    density=0.3,        # g/cm³
-    max_attempts=5,
-    tolerance=2.0       # Å
-)
-
-topology = packer.pack(chains)
-```
-
-### 3. Create OpenMM System
-```python
-from openff.toolkit.typing.engines.smirnoff import ForceField
-from openff.interchange import Interchange
-import openmm
-
-
-ff = ForceField("openff-2.1.0.offxml")
-interchange = Interchange.from_smirnoff(
-    force_field=ff,
-    topology=topology
-)
-
-
-system = interchange.to_openmm_system()
-topology_omm = interchange.to_openmm_topology()
-positions = interchange.positions
-
-interchange.to_pdb("system.pdb")
-
-with open("system.xml", "w") as f:
-    f.write(openmm.XmlSerializer.serialize(system))
-```
-
-### 4. Export to LAMMPS and GROMACS
-```python
-# LAMMPS
-interchange.to_lammps(prefix="system", include_type_labels=True)
-# Creates: system.lmp (data file)
-
-# GROMACS
-interchange.to_gromacs(prefix="system", monolithic=True)
-# Creates: system.top, system.gro
-```
-
 ## Architecture
-```
+```text
 polymer_lib/
-├── __init__.py              # Main exports
-├── calc.py                  # Geometry calculations (Numba-accelerated)
-├── utils.py                 # RDKit utilities and logging
-├── poly.py                  # Core polymerization logic
-├── monomer.py               # Monomer class
-├── polymerizer.py           # Polymerizer class
-├── packer.py                # Packmol wrapper
-└── optimizers/              # Structure optimizers
-    ├── base.py              # BaseOptimizer ABC
-    ├── mmff.py              # MMFF94s optimizer
-    └── openff.py            # OpenFF + NAGL optimizer
-```
-
-## Optimizers
-### MMFF94s (Fast)
-```python
-polymerizer = Polymerizer(
-    monomers=monomers_array,
-    optimizer='mmff'
-)
-```
-### OpenFF with NAGL Charges (Accurate)
-```python
-from polymer_lib import OpenFFOptimizer
-
-optimizer = OpenFFOptimizer(
-    forcefield='openff-2.1.0.offxml',
-    max_iters=1000,
-    platform='CPU',
-    charge_method='openff-gnn-am1bcc-1.0.0.pt'
-)
-
-polymerizer = Polymerizer(
-    monomers=monomers_array,
-    optimizer=optimizer
-)
+├── __init__.py     # Main package exports
+├── api.py          # Versioned JSON request/response API
+├── runner.py       # JSON Lines stdin/stdout process used by Docker
+├── utils.py        # RDKit helpers and library logging
+├── monomer.py      # RDKit monomer construction
+├── polymerizer.py  # Chain growth, retries, and BuildResult
+├── _rust_growth.py # Optional ctypes adapter for the Rust growth core
+├── rust_growth/    # Optional native coordinate-growth implementation
+├── push_off.py     # OpenMM soft-potential relaxation
+├── packer.py       # Packmol box packing
+├── poly.py         # Molecular connection and geometry logic
+├── calc.py         # Numba-accelerated geometry calculations
+└── optimizers/     # MMFF and OpenFF optimizers
 ```

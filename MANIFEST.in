@@ -1,0 +1,2 @@
+include setup.py
+recursive-include polymer_lib/rust_growth Cargo.toml Cargo.lock *.rs
